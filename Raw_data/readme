@@ -1,3 +1,8 @@
 Folder with raw files.
+
 ECOTOX Summary_v12_Rev12_09_15_2022.csv = US EPA ECOTOX curated file. For InputData file
-QSAR_vega_predictions.xlxs = QSAR predictions calculated in VEGA platform
+QSAR_vega_predictions.xlsx = QSAR predictions calculated in VEGA platform
+QSAR_ecosar_predictions.csv = QSAR predictions calculated in ECOSAR platform
+CAS_Lookup_MW_for_ECOTOX_Output_v9_Rev_15.csv = Molecular weight per CAS number (it needs corrections)
+MZQuant_Water_River_Chile_2018_vRepository.rds = Measured environmental concentrations from Inostroza et al., 2023 (REFS)
+Target_ECs_WANA_2018_v4.xlsx = Target chemicals with chemical identifiers and method detection limit values
