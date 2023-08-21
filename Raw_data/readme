@@ -6,3 +6,4 @@ Folder with raw files needed to generate the Summary_Table_Chile2018_vRepository
 
 Summary_Table_Chile2018_vRepository.rds = Measured environmental concentrations from Inostroza et al 2023 (refs) with amended empirical and in-silico ecotoxicological data in RDS format
 Summary_Table_Chile2018_vRepository.tsv = Measured environmental concentrations from Inostroza et al 2023 (refs) with amended empirical and in-silico ecotoxicological data in tsv format
+Summary_Table_Chile2018_vRepository.csv = Measured environmental concentrations from Inostroza et al 2023 (refs) with amended empirical and in-silico ecotoxicological data in csv format
