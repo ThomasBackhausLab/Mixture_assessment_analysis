@@ -1,1 +1,4 @@
-Create_InputData_vRep.R = Create summary file containing measured environmental concentrations from Inostroza et al., (2023) amended with experimental and in-silico QSAR predictions. Output file names: Summary_Table_Chile2018_vRepository.rds and Summary_Table_Chile2018_vRepository.tsv
+Create_InputData_vRep.R
+
+This R-script creates summary files containing measured environmental concentrations from Inostroza et al., (2023) amended with experimental and in-silico QSAR predictions. 
+Output file names: Summary_Table_Chile2018_vRepository.rds and Summary_Table_Chile2018_vRepository.tsv
