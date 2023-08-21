@@ -5,8 +5,5 @@ Output file names: Summary_Table_Chile2018_vRepository.rds and Summary_Table_Chi
 
 Mixtox_assessment_vRepo.qmd
 
-The R-script performs a mixture risk assessment that takes into account three taxonomic groups (algae, macroinvertebrates, fish) and considers the most sensitive taxonomic group (MST).
-Additionally, the R-script identifies absolute and relative risk drivers.
-It considers three exposure scenarios and nine hazard scenarios. Exposure scenarios incorporate non-detectable chemicals, while hazard scenarios are established based on the type of 
-ecotoxicological data (i.e., empirical and in-silico). Suggestions from regulatory authorities such as the European Chemicals Agency (ECHA) and the US EPA are taken into account,
-encouraging the use of quantitative structure-activity relationships (QSARs) for estimating ecotoxicological effects. Detailed explanations can be found in Inostroza et al. (REFERENCE).
+The R-script conducts a mixture risk assessment, considering three taxonomic groups: algae, macroinvertebrates, fish, and the most sensitive taxonomic group (MST). Moreover, the R-script distinguishes between absolute and relative risk drivers. It takes into consideration three exposure scenarios and nine hazard scenarios. These exposure scenarios encompass no-detected schemicals, while hazard scenarios are established based on the ecotoxicological data's source—empirical and in-silico data.
+This approach incorporates suggestions from regulatory bodies such as the European Chemicals Agency (ECHA) and the US EPA. The integration of quantitative structure-activity relationships (QSARs) is encouraged to estimate ecotoxicological effects. Elaborate explanations are described in the work of Inostroza et al. (REFERENCE).
