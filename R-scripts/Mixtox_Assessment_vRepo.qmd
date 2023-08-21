@@ -1,0 +1,2306 @@
+---
+title: "Chile 2018 Mixtox Assessment"
+author: "Thomas Backhaus"
+format: 
+  html:
+    theme: pandoc
+    max-width: 2000px
+toc: true
+toc-depth: 4
+number-sections: true
+number-depth: 4
+editor: source
+---
+```{css, echo=FALSE}
+body{
+  font-size: 11pt;
+  margin-left: 20px;
+  margin-right: auto;
+}
+
+h1{
+  font-size: 14pt;
+  font-weight: bold;
+  line-height: 12pt;
+}
+h2{
+  font-size: 13pt;
+  font-weight: bold;
+  line-height: 10pt;
+}
+h3{
+  font-size: 11pt;
+  font-weight: bold;
+  line-height: 9pt;
+}
+h4{
+  font-size: 11pt;
+  font-weight: normal;
+  font-style: italic;
+  line-height: 11pt;
+}
+blockquote{
+  font-size: 11pt;
+}
+.table caption {
+    color: black;
+    font-weight: bold;
+    font-size:11pt
+}
+```
+# Notes
+
+- Quarto doesn't work if filename contains a space
+- RStudio becomes sluggish after ~1h work
+- Styling with other themes does not work
+
+# History
+
+**V1** Initial version.\
+**V2** Added analysis of ECOSAR data.\
+**V3** Added waterfall charts, VEGA analysis, analysis of summary_table_Chile2018_v4.csv\
+**V4** Added KM analysis, Analysis of mixture risk drivers, re-organized output\
+**V5** Minor changes in output of mixture risk driver tables\
+**V6** Debug Correlation empirical data vs VEGA; Additional column for substances per site; Table headings corrected. Final run with summary_table_Chile2018_vRepo.csv as input data file. Version 5 contains errors in the concentration values.
+
+```{r, eval=TRUE, include=FALSE, echo=FALSE}
+##############
+### Standardtasks at the beginning
+##############
+
+cat("\014") # clear console window prior to new run
+rm(list=ls(all = TRUE)) #remove ALL objects 
+gc() # clear memory
+
+Sys.setenv(LANG = "en") #Let's keep stuff in English
+Sys.setlocale("LC_ALL","English")
+
+#############
+# Global Variables
+#############
+RunAll <- TRUE
+
+vers <- 2
+
+#############
+# Filepaths
+#############
+inwd  <- "/Users/xinope/M_GU/R/RProjects/FRAM_CECs_Chile2018/raw_data"
+outwd <- "/Users/xinope/M_GU/R/RProjects/FRAM_CECs_Chile2018/outputs"
+setwd("/Users/xinope/M_GU/R/RProjects/FRAM_CECs_Chile2018")
+
+#############
+# libs
+#############
+require(tidyverse)
+require(scales)
+require(data.table)
+require(readxl)
+require(knitr)
+require(kableExtra)
+require(writexl)
+require(patchwork)
+require(ggpattern)
+require(NADA)
+require(naniar)
+
+#############
+# set options
+#############
+options(knitr.kable.NA = "")
+
+############
+# Functions
+############
+
+# Transposes dataframe
+df_transpose <- function(df) {
+  
+  #first_name <- colnames(df)[1]
+  
+  temp <-
+    df %>% 
+    tidyr::pivot_longer(-1) %>%
+    tidyr::pivot_wider(names_from = 1, values_from = value)
+  
+  #colnames(temp)[1] <- first_name
+  colnames(temp)[1] <- "old_colnames"
+  
+  temp
+}
+
+# calculates cumulative sum
+# sorts data first
+my_cumsum <- function(vector){
+  df <- data.frame(data=vector)
+  df$marker <- row(df)
+  df <- arrange(df,-data)
+  df$cumsum<-cumsum(df$data)
+  df<-arrange(df,marker)
+  
+  df$cumsum
+}
+
+# returns the column position of n-th largest value
+maxn<-function(x,n=1) order(x,decreasing=TRUE)[n]
+
+# returns the x-th largest value in a vector
+# with n=1 it's identical to the standard max function
+vector_maxn <- function(x,n=1) x[order(x,decreasing=TRUE)][n]
+
+# template sized for A4 waterfall chart
+baseplot1 <- ggplot() + 
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=10, colour = "black"), 
+        axis.title.x= element_text(size=16),
+        axis.text.y = element_text(size=16, colour="black"), 
+        axis.title.y= element_text(size=16, vjust=2),
+        strip.text.x = element_text(size=16),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        # legend.position = 'none', 
+        axis.line.x = element_line(color = 'black',size=0.6),
+        axis.line.y = element_line(color = 'black',size=0.6),
+        plot.margin=unit(c(3,3,3,3),"mm") # oben, rechts, unten, links
+  )+
+  scale_y_continuous("RQ sum")+
+  scale_x_discrete("")+
+  NULL
+
+Waterfall <- function(TU_data, Names, TU_class=-7777,Exp_class=-7777,PlotTitle="", STU=0)
+{  
+  
+  if (length(TU_class)<=1 & length(Exp_class)<=1)
+      wf_plotdata<-data.frame(TU=TU_data, TU_class="Empirical",Exp_class="Measured",Names=Names)
+  if (length(TU_class)>1 & length(Exp_class)<=1)
+      wf_plotdata<-data.frame(TU=TU_data, TU_class=TU_class,Exp_class="Measured",Names=Names)
+  if (length(TU_class)<=1 & length(Exp_class)>1)
+      wf_plotdata<-data.frame(TU=TU_data, TU_class="Empirical",Exp_class=Exp_class,Names=Names)   
+  if (length(TU_class)>1 & length(Exp_class)>1)
+      wf_plotdata<-data.frame(TU=TU_data, TU_class=TU_class,Exp_class=Exp_class,Names=Names)   
+  
+  #generate rank
+  wf_plotdata$rank<-rank(-wf_plotdata$TU, ties.method = "first")
+
+  # sort according to rank & 
+  # convert to ordered factors
+  wf_plotdata = wf_plotdata[order(wf_plotdata$rank),] 
+  wf_plotdata$Names <- factor(wf_plotdata$Names, levels = wf_plotdata$Names)
+  
+  # calculate cumulative sums
+  wf_plotdata$cumsumTU <- cumsum(wf_plotdata$TU)
+  
+  #calculate start value of the bar
+  wf_plotdata$start_1 <- c(0, head(wf_plotdata$cumsumTU, -1))
+  
+  plot_STU <- baseplot1 +
+    # bargraphs
+    #geom_rect(aes(xmin = wf_plotdata$rank - 0.5, xmax = wf_plotdata$rank + 0.5, ymin = wf_plotdata$start_1, ymax = wf_plotdata$cumsumTU),fill="#E31A1C")+
+    #geom_rect(aes(xmin = wf_plotdata$rank - 0.5, xmax = wf_plotdata$rank + 0.5, ymin = wf_plotdata$start_1, 
+    #              ymax = wf_plotdata$cumsumTU,fill=wf_plotdata$TU_class,color=wf_plotdata$Exp_class))+
+    geom_rect_pattern(aes(xmin = wf_plotdata$rank - 0.5, xmax = wf_plotdata$rank + 0.5, ymin = wf_plotdata$start_1, 
+                          ymax = wf_plotdata$cumsumTU,fill=wf_plotdata$TU_class,pattern=wf_plotdata$Exp_class))+
+    scale_pattern_manual(values = c("Below_LOD" = "stripe", "Measured" = "none"),
+                         guide=guide_legend(override.aes = list(fill = "white",color="black"),title="Exposure Measurement")) +
+    scale_fill_manual(values = c("Empirical" = "#000000","QSAR"="#FF0000"),
+                      guide=guide_legend(override.aes = list(pattern = "none"),title="Toxic Unit Calculation")) +
+    #scale_color_manual(values = c("Below_LOD" = "#0000FF","Measured"="#000000")) +
+    
+
+    # Title
+    {if (PlotTitle != "") ggtitle(PlotTitle)}+
+    
+    # x-axis labels
+    aes(x=wf_plotdata$Names)+
+
+    # TU (original)
+    geom_text(aes(label = paste0(round(wf_plotdata$TU,2)), x = wf_plotdata$rank, y = wf_plotdata$cumsumTU), 
+              vjust = -0.5, hjust = 0.5, size=3)+
+    
+    # horizontal STU line
+    {if (STU != 0) geom_hline(yintercept=STU,linetype= "longdash")}+
+    
+    
+    # Text for STU 
+    {if (STU != 0) geom_label(aes(label = paste0(round(STU,2)), x = 1, y = STU*0.99), 
+               vjust = 1, hjust = 0, size=4)}+  
+
+    NULL
+
+  return (plot_STU)
+}
+
+###################################
+# replacement for plyr::round_any
+###################################
+round_any = function(x, accuracy, f=round){f(x/ accuracy) * accuracy}
+  
+###################################
+# returns next lower order of magnitude (OoM)
+###################################
+NextLowerOoM<-function(x){
+
+x<-log10(x)
+x<-round_any(x, 1, floor)
+
+10^(x)
+}
+
+#returns next higher order of magnitude (OoM)
+NextHigherOoM<-function(x){
+
+x<-log10(x)
+x<-round_any(x, 1, ceiling)
+
+10^(x)
+}
+```
+
+
+```{r, eval=TRUE, include=FALSE, echo=FALSE}
+############
+# load input data
+############
+
+inputdata<-read.csv(paste0(inwd,"/Summary_Table_Chile2018_vRepository.csv"),header = TRUE, sep= "\t", stringsAsFactors = FALSE)
+
+# drop superfluous variable
+inputdata$conc_uM<-NULL
+
+```
+
+# Scenarios
+
+The following scenarios are going to be evaluated:
+
+**Exposure**\
+Exp1: Only measured concentrations included. Conc \< MDL set to zero\
+Exp2: Conc \< MDL set to MDL\
+Exp3: Kaplan-Meier adjustment (calculated separately)
+
+**Toxicity**\
+ToxA: Only chemicals with empirical toxdata are included\
+ToxB: Only VEGA QSAR data are included\
+ToxC: Only ECOSAR QSAR data are included\
+ToxD: Use empirical data as far as possible, otherwise use VEGA QSAR\
+ToxE: Use empirical data as far as possible, otherwise use 100\* the VEGA QSAR value\
+ToxF: Use empirical data as far as possible, otherwise use 1/100th of the VEGA QSAR value\
+ToxG: Use empirical data as far as possible, otherwise use ECOTOX QSAR\
+ToxH: Use empirical data as far as possible, otherwise use 100\* the ECOTOX QSAR value\
+ToxI: Use empirical data as far as possible, otherwise use 1/100th of the ECOTOX QSAR value
+
+```{r, eval=TRUE, include=FALSE, echo=FALSE}
+
+data <- inputdata
+
+##########
+# Calculate Exp1, Exp2
+##########
+data$Exp1 <- ifelse(data$MEC_uM>0,data$MEC_uM,0)
+data$Exp2 <- ifelse(data$MEC_uM>0,data$MEC_uM,data$MDL_uM)
+
+##########
+# Marker whether a concentration is < LOD. Needed for KM
+# calculation
+##########
+data$BelowLOD <- ifelse(data$MEC_uM==0,TRUE,FALSE)
+
+#########
+# Number of empirical data available
+#########
+data$NumEmpData <- apply(data[c("alg_ecotox_uM","crust_ecotox_uM","fish_ecotox_uM")], 1, function(x) length(which(x>0)))
+
+##########
+# Calculate ToxA - ToxI
+# Also includes the MST value (Maximum Sensitive Trophic Level)
+# 
+# missings coded as -7777 in the input data
+# 
+# MST calculations return +Inf if all values are missing. This is
+# set to NA at the end.
+# 
+##########
+
+# ToxA = Only empirical data
+data$alg_ToxA<-ifelse(data$alg_ecotox_uM>0,data$alg_ecotox_uM,NA)
+data$crust_ToxA<-ifelse(data$crust_ecotox_uM>0,data$crust_ecotox_uM,NA)
+data$fish_ToxA<-ifelse(data$fish_ecotox_uM>0,data$fish_ecotox_uM,NA)
+data$MST_ToxA<-apply(data[,c("alg_ToxA","crust_ToxA","fish_ToxA")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxA<-ifelse(is.infinite(data$MST_ToxA),NA,data$MST_ToxA)
+
+# ToxB = Only VEGA
+data$alg_ToxB<-ifelse(data$alg_vega_uM>0,data$alg_vega_uM,NA)
+data$crust_ToxB<-ifelse(data$crust_vega_uM>0,data$crust_vega_uM,NA)
+data$fish_ToxB<-ifelse(data$fish_vega_uM>0,data$fish_vega_uM,NA)
+data$MST_ToxB<-apply(data[,c("alg_ToxB","crust_ToxB","fish_ToxB")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxB<-ifelse(is.infinite(data$MST_ToxB),NA,data$MST_ToxB)
+
+# ToxC = Only ECOSAR
+data$alg_ToxC<-ifelse(data$alg_ecosar_uM>0,data$alg_ecosar_uM,NA)
+data$crust_ToxC<-ifelse(data$crust_ecosar_uM>0,data$crust_ecosar_uM,NA)
+data$fish_ToxC<-ifelse(data$fish_ecosar_uM>0,data$fish_ecosar_uM,NA)
+data$MST_ToxC<-apply(data[,c("alg_ToxC","crust_ToxC","fish_ToxC")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxC<-ifelse(is.infinite(data$MST_ToxC),NA,data$MST_ToxC)
+
+# Tox D = Empirical data, amended by VEGA
+data$alg_ToxD<-ifelse(data$alg_ecotox_uM>0,data$alg_ecotox_uM,ifelse(data$alg_vega_uM>0,data$alg_vega_uM,NA))
+data$crust_ToxD<-ifelse(data$crust_ecotox_uM>0,data$crust_ecotox_uM,ifelse(data$crust_vega_uM>0,data$crust_vega_uM,NA))
+data$fish_ToxD<-ifelse(data$fish_ecotox_uM>0,data$fish_ecotox_uM,ifelse(data$fish_vega_uM>0,data$fish_vega_uM,NA))
+data$MST_ToxD<-apply(data[,c("alg_ToxD","crust_ToxD","fish_ToxD")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxD<-ifelse(is.infinite(data$MST_ToxD),NA,data$MST_ToxD)
+
+# Tox E = Empirical data, amended by VEGA*100
+data$alg_ToxE<-ifelse(data$alg_ecotox_uM>0,data$alg_ecotox_uM,ifelse(data$alg_vega_uM>0,data$alg_vega_uM*100,NA))
+data$crust_ToxE<-ifelse(data$crust_ecotox_uM>0,data$crust_ecotox_uM,ifelse(data$crust_vega_uM>0,data$crust_vega_uM*100,NA))
+data$fish_ToxE<-ifelse(data$fish_ecotox_uM>0,data$fish_ecotox_uM,ifelse(data$fish_vega_uM>0,data$fish_vega_uM*100,NA))
+data$MST_ToxE<-apply(data[,c("alg_ToxE","crust_ToxE","fish_ToxE")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxE<-ifelse(is.infinite(data$MST_ToxE),NA,data$MST_ToxE)
+
+# ToxF = Empirical data,amended by VEGA/100
+data$alg_ToxF<-ifelse(data$alg_ecotox_uM>0,data$alg_ecotox_uM,ifelse(data$alg_vega_uM>0,data$alg_vega_uM/100,NA))
+data$crust_ToxF<-ifelse(data$crust_ecotox_uM>0,data$crust_ecotox_uM,ifelse(data$crust_vega_uM>0,data$crust_vega_uM/100,NA))
+data$fish_ToxF<-ifelse(data$fish_ecotox_uM>0,data$fish_ecotox_uM,ifelse(data$fish_vega_uM>0,data$fish_vega_uM/100,NA))
+data$MST_ToxF<-apply(data[,c("alg_ToxF","crust_ToxF","fish_ToxF")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxF<-ifelse(is.infinite(data$MST_ToxF),NA,data$MST_ToxF)
+
+# ToxG = Empirical data, amended by ECOSAR
+data$alg_ToxG<-ifelse(data$alg_ecotox_uM>0,data$alg_ecotox_uM,ifelse(data$alg_ecosar_uM>0,data$alg_ecosar_uM,NA))
+data$crust_ToxG<-ifelse(data$crust_ecotox_uM>0,data$crust_ecotox_uM,ifelse(data$crust_ecosar_uM>0,data$crust_ecosar_uM,NA))
+data$fish_ToxG<-ifelse(data$fish_ecotox_uM>0,data$fish_ecotox_uM,ifelse(data$fish_ecosar_uM>0,data$fish_ecosar_uM,NA))
+data$MST_ToxG<-apply(data[,c("alg_ToxG","crust_ToxG","fish_ToxG")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxG<-ifelse(is.infinite(data$MST_ToxG),NA,data$MST_ToxG)
+
+# ToxH = Empirical data, amended by ECOSAR*100
+data$alg_ToxH<-ifelse(data$alg_ecotox_uM>0,data$alg_ecotox_uM,ifelse(data$alg_ecosar_uM>0,data$alg_ecosar_uM*100,NA))
+data$crust_ToxH<-ifelse(data$crust_ecotox_uM>0,data$crust_ecotox_uM,ifelse(data$crust_ecosar_uM>0,data$crust_ecosar_uM*100,NA))
+data$fish_ToxH<-ifelse(data$fish_ecotox_uM>0,data$fish_ecotox_uM,ifelse(data$fish_ecosar_uM>0,data$fish_ecosar_uM*100,NA))
+data$MST_ToxH<-apply(data[,c("alg_ToxH","crust_ToxH","fish_ToxH")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxH<-ifelse(is.infinite(data$MST_ToxH),NA,data$MST_ToxH)
+
+# ToxI = Empirical data,amended by ECOSAR/100
+data$alg_ToxI<-ifelse(data$alg_ecotox_uM>0,data$alg_ecotox_uM,ifelse(data$alg_ecosar_uM>0,data$alg_ecosar_uM/100,NA))
+data$crust_ToxI<-ifelse(data$crust_ecotox_uM>0,data$crust_ecotox_uM,ifelse(data$crust_ecosar_uM>0,data$crust_ecosar_uM/100,NA))
+data$fish_ToxI<-ifelse(data$fish_ecotox_uM>0,data$fish_ecotox_uM,ifelse(data$fish_ecosar_uM>0,data$fish_ecosar_uM/100,NA))
+data$MST_ToxI<-apply(data[,c("alg_ToxI","crust_ToxI","fish_ToxI")], 1, FUN = min,na.rm=TRUE)
+data$MST_ToxI<-ifelse(is.infinite(data$MST_ToxI),NA,data$MST_ToxI)
+
+###########
+# Calculate Toxic Units
+###########
+data$alg_TU_Exp1_ToxA<-data$Exp1/data$alg_ToxA
+data$crust_TU_Exp1_ToxA<-data$Exp1/data$crust_ToxA
+data$fish_TU_Exp1_ToxA<-data$Exp1/data$fish_ToxA
+data$MST_TU_Exp1_ToxA<-data$Exp1/data$MST_ToxA
+
+data$alg_TU_Exp2_ToxA<-data$Exp2/data$alg_ToxA
+data$crust_TU_Exp2_ToxA<-data$Exp2/data$crust_ToxA
+data$fish_TU_Exp2_ToxA<-data$Exp2/data$fish_ToxA
+data$MST_TU_Exp2_ToxA<-data$Exp2/data$MST_ToxA
+
+data$alg_TU_Exp1_ToxB<-data$Exp1/data$alg_ToxB
+data$crust_TU_Exp1_ToxB<-data$Exp1/data$crust_ToxB
+data$fish_TU_Exp1_ToxB<-data$Exp1/data$fish_ToxB
+data$MST_TU_Exp1_ToxB<-data$Exp1/data$MST_ToxB
+
+data$alg_TU_Exp2_ToxB<-data$Exp2/data$alg_ToxB
+data$crust_TU_Exp2_ToxB<-data$Exp2/data$crust_ToxB
+data$fish_TU_Exp2_ToxB<-data$Exp2/data$fish_ToxB
+data$MST_TU_Exp2_ToxB<-data$Exp2/data$MST_ToxB
+
+data$alg_TU_Exp1_ToxC<-data$Exp1/data$alg_ToxC
+data$crust_TU_Exp1_ToxC<-data$Exp1/data$crust_ToxC
+data$fish_TU_Exp1_ToxC<-data$Exp1/data$fish_ToxC
+data$MST_TU_Exp1_ToxC<-data$Exp1/data$MST_ToxC
+
+data$alg_TU_Exp2_ToxC<-data$Exp2/data$alg_ToxC
+data$crust_TU_Exp2_ToxC<-data$Exp2/data$crust_ToxC
+data$fish_TU_Exp2_ToxC<-data$Exp2/data$fish_ToxC
+data$MST_TU_Exp2_ToxC<-data$Exp2/data$MST_ToxC
+
+data$alg_TU_Exp1_ToxD<-data$Exp1/data$alg_ToxD
+data$crust_TU_Exp1_ToxD<-data$Exp1/data$crust_ToxD
+data$fish_TU_Exp1_ToxD<-data$Exp1/data$fish_ToxD
+data$MST_TU_Exp1_ToxD<-data$Exp1/data$MST_ToxD
+
+data$alg_TU_Exp2_ToxD<-data$Exp2/data$alg_ToxD
+data$crust_TU_Exp2_ToxD<-data$Exp2/data$crust_ToxD
+data$fish_TU_Exp2_ToxD<-data$Exp2/data$fish_ToxD
+data$MST_TU_Exp2_ToxD<-data$Exp2/data$MST_ToxD
+
+data$alg_TU_Exp1_ToxE<-data$Exp1/data$alg_ToxE
+data$crust_TU_Exp1_ToxE<-data$Exp1/data$crust_ToxE
+data$fish_TU_Exp1_ToxE<-data$Exp1/data$fish_ToxE
+data$MST_TU_Exp1_ToxE<-data$Exp1/data$MST_ToxE
+
+data$alg_TU_Exp2_ToxE<-data$Exp2/data$alg_ToxE
+data$crust_TU_Exp2_ToxE<-data$Exp2/data$crust_ToxE
+data$fish_TU_Exp2_ToxE<-data$Exp2/data$fish_ToxE
+data$MST_TU_Exp2_ToxE<-data$Exp2/data$MST_ToxE
+
+data$alg_TU_Exp1_ToxF<-data$Exp1/data$alg_ToxF
+data$crust_TU_Exp1_ToxF<-data$Exp1/data$crust_ToxF
+data$fish_TU_Exp1_ToxF<-data$Exp1/data$fish_ToxF
+data$MST_TU_Exp1_ToxF<-data$Exp1/data$MST_ToxF
+
+data$alg_TU_Exp2_ToxF<-data$Exp2/data$alg_ToxF
+data$crust_TU_Exp2_ToxF<-data$Exp2/data$crust_ToxF
+data$fish_TU_Exp2_ToxF<-data$Exp2/data$fish_ToxF
+data$MST_TU_Exp2_ToxF<-data$Exp2/data$MST_ToxF
+
+data$alg_TU_Exp1_ToxG<-data$Exp1/data$alg_ToxG
+data$crust_TU_Exp1_ToxG<-data$Exp1/data$crust_ToxG
+data$fish_TU_Exp1_ToxG<-data$Exp1/data$fish_ToxG
+data$MST_TU_Exp1_ToxG<-data$Exp1/data$MST_ToxG
+
+data$alg_TU_Exp2_ToxG<-data$Exp2/data$alg_ToxG
+data$crust_TU_Exp2_ToxG<-data$Exp2/data$crust_ToxG
+data$fish_TU_Exp2_ToxG<-data$Exp2/data$fish_ToxG
+data$MST_TU_Exp2_ToxG<-data$Exp2/data$MST_ToxG
+
+data$alg_TU_Exp1_ToxH<-data$Exp1/data$alg_ToxH
+data$crust_TU_Exp1_ToxH<-data$Exp1/data$crust_ToxH
+data$fish_TU_Exp1_ToxH<-data$Exp1/data$fish_ToxH
+data$MST_TU_Exp1_ToxH<-data$Exp1/data$MST_ToxH
+
+data$alg_TU_Exp2_ToxH<-data$Exp2/data$alg_ToxH
+data$crust_TU_Exp2_ToxH<-data$Exp2/data$crust_ToxH
+data$fish_TU_Exp2_ToxH<-data$Exp2/data$fish_ToxH
+data$MST_TU_Exp2_ToxH<-data$Exp2/data$MST_ToxH
+
+data$alg_TU_Exp1_ToxI<-data$Exp1/data$alg_ToxI
+data$crust_TU_Exp1_ToxI<-data$Exp1/data$crust_ToxI
+data$fish_TU_Exp1_ToxI<-data$Exp1/data$fish_ToxI
+data$MST_TU_Exp1_ToxI<-data$Exp1/data$MST_ToxI
+
+data$alg_TU_Exp2_ToxI<-data$Exp2/data$alg_ToxI
+data$crust_TU_Exp2_ToxI<-data$Exp2/data$crust_ToxI
+data$fish_TU_Exp2_ToxI<-data$Exp2/data$fish_ToxI
+data$MST_TU_Exp2_ToxI<-data$Exp2/data$MST_ToxI
+
+#########
+# Calculate cumulative TU (cumTU), relative TU (rel TU),
+# cumulative relative TU (cumrelTU), TU rank (rankTU)
+# and no of compounds (no_compounds)
+#
+# !!
+# NA's need to be replaced with 0 as otherwise the script crashes.
+# This is because the numbers to be considered would be different for the 
+# different scenarios - and the merging with the 
+# full list of CAS numbers would fail.
+# 
+# No other number would do, as that would torpedo the calculation 
+# of the statistics
+# !!
+#########
+
+# Replace NA's with 0
+data[is.na(data)] <- 0
+
+# Retrieve list of CAS numbers
+# in the correct order (!)
+All_CAS <- levels(as.factor(data$cas_number))
+
+# Calculate various compound-specific statistics for all TU types and all sites
+data2<-
+  aggregate(
+    cbind(alg_TU_Exp1_ToxA,crust_TU_Exp1_ToxA, fish_TU_Exp1_ToxA, MST_TU_Exp1_ToxA,
+          alg_TU_Exp2_ToxA,crust_TU_Exp2_ToxA, fish_TU_Exp2_ToxA, MST_TU_Exp2_ToxA,
+          alg_TU_Exp1_ToxB,crust_TU_Exp1_ToxB, fish_TU_Exp1_ToxB, MST_TU_Exp1_ToxB,
+          alg_TU_Exp2_ToxB,crust_TU_Exp2_ToxB, fish_TU_Exp2_ToxB, MST_TU_Exp2_ToxB,
+          alg_TU_Exp1_ToxC,crust_TU_Exp1_ToxC, fish_TU_Exp1_ToxC, MST_TU_Exp1_ToxC,
+          alg_TU_Exp2_ToxC,crust_TU_Exp2_ToxC, fish_TU_Exp2_ToxC, MST_TU_Exp2_ToxC,
+          alg_TU_Exp1_ToxD,crust_TU_Exp1_ToxD, fish_TU_Exp1_ToxD, MST_TU_Exp1_ToxD,
+          alg_TU_Exp2_ToxD,crust_TU_Exp2_ToxD, fish_TU_Exp2_ToxD, MST_TU_Exp2_ToxD,
+          alg_TU_Exp1_ToxE,crust_TU_Exp1_ToxE, fish_TU_Exp1_ToxE, MST_TU_Exp1_ToxE,
+          alg_TU_Exp2_ToxE,crust_TU_Exp2_ToxE, fish_TU_Exp2_ToxE, MST_TU_Exp2_ToxE,
+          alg_TU_Exp1_ToxF,crust_TU_Exp1_ToxF, fish_TU_Exp1_ToxF, MST_TU_Exp1_ToxF,
+          alg_TU_Exp2_ToxF,crust_TU_Exp2_ToxF, fish_TU_Exp2_ToxF, MST_TU_Exp2_ToxF,
+          alg_TU_Exp1_ToxG,crust_TU_Exp1_ToxG, fish_TU_Exp1_ToxG, MST_TU_Exp1_ToxG,
+          alg_TU_Exp2_ToxG,crust_TU_Exp2_ToxG, fish_TU_Exp2_ToxG, MST_TU_Exp2_ToxG,
+          alg_TU_Exp1_ToxH,crust_TU_Exp1_ToxH, fish_TU_Exp1_ToxH, MST_TU_Exp1_ToxH,
+          alg_TU_Exp2_ToxH,crust_TU_Exp2_ToxH, fish_TU_Exp2_ToxH, MST_TU_Exp2_ToxH,
+          alg_TU_Exp1_ToxI,crust_TU_Exp1_ToxI, fish_TU_Exp1_ToxI, MST_TU_Exp1_ToxI,
+          alg_TU_Exp2_ToxI,crust_TU_Exp2_ToxI, fish_TU_Exp2_ToxI, MST_TU_Exp2_ToxI
+          ) ~ sites,data = data,
+    FUN = function(x) c(cumSum=my_cumsum(x),
+                        relTU=x/sum(x),
+                        relCumSum=my_cumsum(x)/sum(x),
+                        Rank = rank(-x, ties.method = "first"),
+                        TU=x # is also in data, just for cross-check
+                       )
+  )
+data2 <- do.call(data.frame, data2)
+
+# transpose into long format
+data2<-df_transpose(data2)
+
+# better first column name
+colnames(data2)[1] <- "Endpoint"
+ 
+# Delete the trailing numbers 
+data2$Endpoint<-gsub("\\d+$", "", data2$Endpoint)
+
+# merge CAS-numbers back in 
+data2<-cbind(data2,All_CAS)
+
+# pivot to re-arrange into convenient format
+data2 <- data2 %>% 
+  pivot_longer(c("R1","R2","R3","RS1","RS2","RS3","T1","T2","T3"),names_to="sites",values_to = "value") %>%
+  pivot_wider(names_from="Endpoint",values_from = "value")
+
+# Final dataframe with all original data
+# and compound-level statistics
+compound_level_statistics<-left_join(data,data2,by=c("cas_number"="All_CAS","sites"="sites"))
+
+# Calculate various site-specific statistics
+data2<-
+  aggregate(
+    cbind(alg_TU_Exp1_ToxA,crust_TU_Exp1_ToxA, fish_TU_Exp1_ToxA, MST_TU_Exp1_ToxA,
+          alg_TU_Exp2_ToxA,crust_TU_Exp2_ToxA, fish_TU_Exp2_ToxA, MST_TU_Exp2_ToxA,
+          alg_TU_Exp1_ToxB,crust_TU_Exp1_ToxB, fish_TU_Exp1_ToxB, MST_TU_Exp1_ToxB,
+          alg_TU_Exp2_ToxB,crust_TU_Exp2_ToxB, fish_TU_Exp2_ToxB, MST_TU_Exp2_ToxB,
+          alg_TU_Exp1_ToxC,crust_TU_Exp1_ToxC, fish_TU_Exp1_ToxC, MST_TU_Exp1_ToxC,
+          alg_TU_Exp2_ToxC,crust_TU_Exp2_ToxC, fish_TU_Exp2_ToxC, MST_TU_Exp2_ToxC,
+          alg_TU_Exp1_ToxD,crust_TU_Exp1_ToxD, fish_TU_Exp1_ToxD, MST_TU_Exp1_ToxD,
+          alg_TU_Exp2_ToxD,crust_TU_Exp2_ToxD, fish_TU_Exp2_ToxD, MST_TU_Exp2_ToxD,
+          alg_TU_Exp1_ToxE,crust_TU_Exp1_ToxE, fish_TU_Exp1_ToxE, MST_TU_Exp1_ToxE,
+          alg_TU_Exp2_ToxE,crust_TU_Exp2_ToxE, fish_TU_Exp2_ToxE, MST_TU_Exp2_ToxE,
+          alg_TU_Exp1_ToxF,crust_TU_Exp1_ToxF, fish_TU_Exp1_ToxF, MST_TU_Exp1_ToxF,
+          alg_TU_Exp2_ToxF,crust_TU_Exp2_ToxF, fish_TU_Exp2_ToxF, MST_TU_Exp2_ToxF,
+          alg_TU_Exp1_ToxG,crust_TU_Exp1_ToxG, fish_TU_Exp1_ToxG, MST_TU_Exp1_ToxG,
+          alg_TU_Exp2_ToxG,crust_TU_Exp2_ToxG, fish_TU_Exp2_ToxG, MST_TU_Exp2_ToxG,
+          alg_TU_Exp1_ToxH,crust_TU_Exp1_ToxH, fish_TU_Exp1_ToxH, MST_TU_Exp1_ToxH,
+          alg_TU_Exp2_ToxH,crust_TU_Exp2_ToxH, fish_TU_Exp2_ToxH, MST_TU_Exp2_ToxH,
+          alg_TU_Exp1_ToxI,crust_TU_Exp1_ToxI, fish_TU_Exp1_ToxI, MST_TU_Exp1_ToxI,
+          alg_TU_Exp2_ToxI,crust_TU_Exp2_ToxI, fish_TU_Exp2_ToxI, MST_TU_Exp2_ToxI
+          ) ~ sites,data = data,
+    FUN = function(x) c(MCR = sum(x)/max(x),
+                        no_components = sum(x > 0),
+                        STU = sum(x)
+                        # STU_KM = mean(cenfit(x, data$BelowLOD))[1]/length(x) does not work, see below
+                       )
+  )
+
+# Final dataframe with the site-specific statistics
+data2<- do.call(data.frame, data2)
+
+#########
+# 
+# KM calculation
+# 
+# Just adding a line into the aggregate call (see above) does not work, as the
+# data$BelowLOD contains the full column, not only the part that only refers to the currently
+# processed site (i.e. the part of the full column that is in "x").
+# 
+# Also: KM must use only variables from Exp2. Variables from Exp1 cannot be used for the KM
+# adjustment. In Exp1 all TUs with conc<LOD are set to zero, so there is no possibility to
+# estimate KM, which needs to maximum possible value for every missing. Which is what is in
+# the Exp2 data.
+# 
+#########
+
+# LOOPY - should be possible to re-code using a function from the
+
+variables<-c("alg_TU_Exp2_ToxA","crust_TU_Exp2_ToxA", "fish_TU_Exp2_ToxA", "MST_TU_Exp2_ToxA",
+             "alg_TU_Exp2_ToxB","crust_TU_Exp2_ToxB", "fish_TU_Exp2_ToxB", "MST_TU_Exp2_ToxB",
+             "alg_TU_Exp2_ToxC","crust_TU_Exp2_ToxC", "fish_TU_Exp2_ToxC", "MST_TU_Exp2_ToxC",
+             "alg_TU_Exp2_ToxD","crust_TU_Exp2_ToxD", "fish_TU_Exp2_ToxD", "MST_TU_Exp2_ToxD",
+             "alg_TU_Exp2_ToxE","crust_TU_Exp2_ToxE", "fish_TU_Exp2_ToxE", "MST_TU_Exp2_ToxE",
+             "alg_TU_Exp2_ToxF","crust_TU_Exp2_ToxF", "fish_TU_Exp2_ToxF", "MST_TU_Exp2_ToxF",
+             "alg_TU_Exp2_ToxG","crust_TU_Exp2_ToxG", "fish_TU_Exp2_ToxG", "MST_TU_Exp2_ToxG",
+             "alg_TU_Exp2_ToxH","crust_TU_Exp2_ToxH", "fish_TU_Exp2_ToxH", "MST_TU_Exp2_ToxH",
+             "alg_TU_Exp2_ToxI","crust_TU_Exp2_ToxI", "fish_TU_Exp2_ToxI", "MST_TU_Exp2_ToxI")
+
+ListOfSites<-c("RS1","RS2","RS3","T1","T2","T3","R1","R2","R3")
+
+result<-data.frame(sites=ListOfSites)
+result <- add_column(result,
+             "alg_TU_Exp3_ToxA.STU"=0,"crust_TU_Exp3_ToxA.STU"=0, "fish_TU_Exp3_ToxA.STU"=0, "MST_TU_Exp3_ToxA.STU"=0,
+             "alg_TU_Exp3_ToxB.STU"=0,"crust_TU_Exp3_ToxB.STU"=0, "fish_TU_Exp3_ToxB.STU"=0, "MST_TU_Exp3_ToxB.STU"=0,
+             "alg_TU_Exp3_ToxC.STU"=0,"crust_TU_Exp3_ToxC.STU"=0, "fish_TU_Exp3_ToxC.STU"=0, "MST_TU_Exp3_ToxC.STU"=0,
+             "alg_TU_Exp3_ToxD.STU"=0,"crust_TU_Exp3_ToxD.STU"=0, "fish_TU_Exp3_ToxD.STU"=0, "MST_TU_Exp3_ToxD.STU"=0,
+             "alg_TU_Exp3_ToxE.STU"=0,"crust_TU_Exp3_ToxE.STU"=0, "fish_TU_Exp3_ToxE.STU"=0, "MST_TU_Exp3_ToxE.STU"=0,
+             "alg_TU_Exp3_ToxF.STU"=0,"crust_TU_Exp3_ToxF.STU"=0, "fish_TU_Exp3_ToxF.STU"=0, "MST_TU_Exp3_ToxF.STU"=0,
+             "alg_TU_Exp3_ToxG.STU"=0,"crust_TU_Exp3_ToxG.STU"=0, "fish_TU_Exp3_ToxG.STU"=0, "MST_TU_Exp3_ToxG.STU"=0,
+             "alg_TU_Exp3_ToxH.STU"=0,"crust_TU_Exp3_ToxH.STU"=0, "fish_TU_Exp3_ToxH.STU"=0, "MST_TU_Exp3_ToxH.STU"=0,
+             "alg_TU_Exp3_ToxI.STU"=0,"crust_TU_Exp3_ToxI.STU"=0, "fish_TU_Exp3_ToxI.STU"=0, "MST_TU_Exp3_ToxI.STU"=0
+                     )
+
+for(i in 1:length(variables)) {
+    dummy<-data %>% select(variables[i],sites,BelowLOD) 
+  
+    for(j in 1:length(ListOfSites)) {
+      dummy2 <- dummy %>% filter(sites==ListOfSites[j])
+      result[j,i+1]<-mean(cenfit(dummy2[,1], dummy2[,3]))[1]*nrow(dummy2)
+    }
+}
+
+# merge
+data2<-left_join(data2,result,by=c("sites"="sites"))
+
+# Calculate Site Ranks
+
+data2$dummy <- "SiteRank" # Dummy Variable
+
+sites <- data2$sites # Save sites
+
+data3<-
+  aggregate(
+    cbind(alg_TU_Exp1_ToxA.STU,crust_TU_Exp1_ToxA.STU, fish_TU_Exp1_ToxA.STU, MST_TU_Exp1_ToxA.STU,
+          alg_TU_Exp2_ToxA.STU,crust_TU_Exp2_ToxA.STU, fish_TU_Exp2_ToxA.STU, MST_TU_Exp2_ToxA.STU,
+          alg_TU_Exp1_ToxB.STU,crust_TU_Exp1_ToxB.STU, fish_TU_Exp1_ToxB.STU, MST_TU_Exp1_ToxB.STU,
+          alg_TU_Exp2_ToxB.STU,crust_TU_Exp2_ToxB.STU, fish_TU_Exp2_ToxB.STU, MST_TU_Exp2_ToxB.STU,
+          alg_TU_Exp1_ToxC.STU,crust_TU_Exp1_ToxC.STU, fish_TU_Exp1_ToxC.STU, MST_TU_Exp1_ToxC.STU,
+          alg_TU_Exp2_ToxC.STU,crust_TU_Exp2_ToxC.STU, fish_TU_Exp2_ToxC.STU, MST_TU_Exp2_ToxC.STU,
+          alg_TU_Exp1_ToxD.STU,crust_TU_Exp1_ToxD.STU, fish_TU_Exp1_ToxD.STU, MST_TU_Exp1_ToxD.STU,
+          alg_TU_Exp2_ToxD.STU,crust_TU_Exp2_ToxD.STU, fish_TU_Exp2_ToxD.STU, MST_TU_Exp2_ToxD.STU,
+          alg_TU_Exp1_ToxE.STU,crust_TU_Exp1_ToxE.STU, fish_TU_Exp1_ToxE.STU, MST_TU_Exp1_ToxE.STU,
+          alg_TU_Exp2_ToxE.STU,crust_TU_Exp2_ToxE.STU, fish_TU_Exp2_ToxE.STU, MST_TU_Exp2_ToxE.STU,
+          alg_TU_Exp1_ToxF.STU,crust_TU_Exp1_ToxF.STU, fish_TU_Exp1_ToxF.STU, MST_TU_Exp1_ToxF.STU,
+          alg_TU_Exp2_ToxF.STU,crust_TU_Exp2_ToxF.STU, fish_TU_Exp2_ToxF.STU, MST_TU_Exp2_ToxF.STU,
+          alg_TU_Exp1_ToxG.STU,crust_TU_Exp1_ToxG.STU, fish_TU_Exp1_ToxG.STU, MST_TU_Exp1_ToxG.STU,
+          alg_TU_Exp2_ToxG.STU,crust_TU_Exp2_ToxG.STU, fish_TU_Exp2_ToxG.STU, MST_TU_Exp2_ToxG.STU,
+          alg_TU_Exp1_ToxH.STU,crust_TU_Exp1_ToxH.STU, fish_TU_Exp1_ToxH.STU, MST_TU_Exp1_ToxH.STU,
+          alg_TU_Exp2_ToxH.STU,crust_TU_Exp2_ToxH.STU, fish_TU_Exp2_ToxH.STU, MST_TU_Exp2_ToxH.STU,
+          alg_TU_Exp1_ToxI.STU,crust_TU_Exp1_ToxI.STU, fish_TU_Exp1_ToxI.STU, MST_TU_Exp1_ToxI.STU,
+          alg_TU_Exp2_ToxI.STU,crust_TU_Exp2_ToxI.STU, fish_TU_Exp2_ToxI.STU, MST_TU_Exp2_ToxI.STU
+          ) ~ dummy,data = data2,
+    FUN = function(x) c(SiteRank = rank(-x, ties.method = "first"))
+    )
+
+data2$dummy <- NULL
+
+ data3<- do.call(data.frame, data3)
+ 
+# transpose into long format
+data3<-df_transpose(data3)
+
+# better first column name
+colnames(data3)[1] <- "STU_Type"
+ 
+# Delete the trailing numbers 
+data3$STU_Type<-gsub("\\d+$", "", data3$STU_Type)
+
+# merge Sites back in 
+data3<-cbind(data3,sites)
+
+# pivot to re-arrange into convenient format
+data3 <- data3 %>% 
+  pivot_wider(names_from="STU_Type",values_from = "SiteRank")
+
+# Final dataframe with the site-specific statistics
+site_level_statistics<-left_join(data2,data3,by=c("sites"="sites"))
+
+############
+# Generate df STU_summary with just the STU estimates for all scenarios
+############
+STU_summary<- site_level_statistics[c("sites",
+                        "alg_TU_Exp1_ToxA.STU","crust_TU_Exp1_ToxA.STU","fish_TU_Exp1_ToxA.STU","MST_TU_Exp1_ToxA.STU",
+                        "alg_TU_Exp2_ToxA.STU","crust_TU_Exp2_ToxA.STU","fish_TU_Exp2_ToxA.STU","MST_TU_Exp2_ToxA.STU",
+                        "alg_TU_Exp3_ToxA.STU","crust_TU_Exp3_ToxA.STU","fish_TU_Exp3_ToxA.STU","MST_TU_Exp3_ToxA.STU",
+                        "alg_TU_Exp1_ToxB.STU","crust_TU_Exp1_ToxB.STU","fish_TU_Exp1_ToxB.STU","MST_TU_Exp1_ToxB.STU",
+                        "alg_TU_Exp2_ToxB.STU","crust_TU_Exp2_ToxB.STU","fish_TU_Exp2_ToxB.STU","MST_TU_Exp2_ToxB.STU",
+                        "alg_TU_Exp3_ToxB.STU","crust_TU_Exp3_ToxB.STU","fish_TU_Exp3_ToxB.STU","MST_TU_Exp3_ToxB.STU",
+                        "alg_TU_Exp1_ToxC.STU","crust_TU_Exp1_ToxC.STU","fish_TU_Exp1_ToxC.STU","MST_TU_Exp1_ToxC.STU",
+                        "alg_TU_Exp2_ToxC.STU","crust_TU_Exp2_ToxC.STU","fish_TU_Exp2_ToxC.STU","MST_TU_Exp2_ToxC.STU",
+                        "alg_TU_Exp3_ToxC.STU","crust_TU_Exp3_ToxC.STU","fish_TU_Exp3_ToxC.STU","MST_TU_Exp3_ToxC.STU",
+                        "alg_TU_Exp1_ToxD.STU","crust_TU_Exp1_ToxD.STU","fish_TU_Exp1_ToxD.STU","MST_TU_Exp1_ToxD.STU",
+                        "alg_TU_Exp2_ToxD.STU","crust_TU_Exp2_ToxD.STU","fish_TU_Exp2_ToxD.STU","MST_TU_Exp2_ToxD.STU",
+                        "alg_TU_Exp3_ToxD.STU","crust_TU_Exp3_ToxD.STU","fish_TU_Exp3_ToxD.STU","MST_TU_Exp3_ToxD.STU",
+                        "alg_TU_Exp1_ToxE.STU","crust_TU_Exp1_ToxE.STU","fish_TU_Exp1_ToxE.STU","MST_TU_Exp1_ToxE.STU",
+                        "alg_TU_Exp2_ToxE.STU","crust_TU_Exp2_ToxE.STU","fish_TU_Exp2_ToxE.STU","MST_TU_Exp2_ToxE.STU",
+                        "alg_TU_Exp3_ToxE.STU","crust_TU_Exp3_ToxE.STU","fish_TU_Exp3_ToxE.STU","MST_TU_Exp3_ToxE.STU",
+                        "alg_TU_Exp1_ToxF.STU","crust_TU_Exp1_ToxF.STU","fish_TU_Exp1_ToxF.STU","MST_TU_Exp1_ToxF.STU",
+                        "alg_TU_Exp2_ToxF.STU","crust_TU_Exp2_ToxF.STU","fish_TU_Exp2_ToxF.STU","MST_TU_Exp2_ToxF.STU",
+                        "alg_TU_Exp3_ToxF.STU","crust_TU_Exp3_ToxF.STU","fish_TU_Exp3_ToxF.STU","MST_TU_Exp3_ToxF.STU",
+                        "alg_TU_Exp1_ToxG.STU","crust_TU_Exp1_ToxG.STU","fish_TU_Exp1_ToxG.STU","MST_TU_Exp1_ToxG.STU",
+                        "alg_TU_Exp2_ToxG.STU","crust_TU_Exp2_ToxG.STU","fish_TU_Exp2_ToxG.STU","MST_TU_Exp2_ToxG.STU",
+                        "alg_TU_Exp3_ToxG.STU","crust_TU_Exp3_ToxG.STU","fish_TU_Exp3_ToxG.STU","MST_TU_Exp3_ToxG.STU",
+                        "alg_TU_Exp1_ToxH.STU","crust_TU_Exp1_ToxH.STU","fish_TU_Exp1_ToxH.STU","MST_TU_Exp1_ToxH.STU",
+                        "alg_TU_Exp2_ToxH.STU","crust_TU_Exp2_ToxH.STU","fish_TU_Exp2_ToxH.STU","MST_TU_Exp2_ToxH.STU",
+                        "alg_TU_Exp3_ToxH.STU","crust_TU_Exp3_ToxH.STU","fish_TU_Exp3_ToxH.STU","MST_TU_Exp3_ToxH.STU",
+                        "alg_TU_Exp1_ToxI.STU","crust_TU_Exp1_ToxI.STU","fish_TU_Exp1_ToxI.STU","MST_TU_Exp1_ToxI.STU",
+                        "alg_TU_Exp2_ToxI.STU","crust_TU_Exp2_ToxI.STU","fish_TU_Exp2_ToxI.STU","MST_TU_Exp2_ToxI.STU",
+                        "alg_TU_Exp3_ToxI.STU","crust_TU_Exp3_ToxI.STU","fish_TU_Exp3_ToxI.STU","MST_TU_Exp3_ToxI.STU"
+                        )] %>%
+setnames(c("Site",
+           "AlgExp1ToxA","CrustExp1ToxA","FishExp1ToxA","MSTExp1ToxA",
+           "AlgExp2ToxA","CrustExp2ToxA","FishExp2ToxA","MSTExp2ToxA",
+           "AlgExp3ToxA","CrustExp3ToxA","FishExp3ToxA","MSTExp3ToxA",
+           "AlgExp1ToxB","CrustExp1ToxB","FishExp1ToxB","MSTExp1ToxB",
+           "AlgExp2ToxB","CrustExp2ToxB","FishExp2ToxB","MSTExp2ToxB",
+           "AlgExp3ToxB","CrustExp3ToxB","FishExp3ToxB","MSTExp3ToxB",
+           "AlgExp1ToxC","CrustExp1ToxC","FishExp1ToxC","MSTExp1ToxC",
+           "AlgExp2ToxC","CrustExp2ToxC","FishExp2ToxC","MSTExp2ToxC",
+           "AlgExp3ToxC","CrustExp3ToxC","FishExp3ToxC","MSTExp3ToxC",
+           "AlgExp1ToxD","CrustExp1ToxD","FishExp1ToxD","MSTExp1ToxD",
+           "AlgExp2ToxD","CrustExp2ToxD","FishExp2ToxD","MSTExp2ToxD",
+           "AlgExp3ToxD","CrustExp3ToxD","FishExp3ToxD","MSTExp3ToxD",
+           "AlgExp1ToxE","CrustExp1ToxE","FishExp1ToxE","MSTExp1ToxE",
+           "AlgExp2ToxE","CrustExp2ToxE","FishExp2ToxE","MSTExp2ToxE",
+           "AlgExp3ToxE","CrustExp3ToxE","FishExp3ToxE","MSTExp3ToxE",
+           "AlgExp1ToxF","CrustExp1ToxF","FishExp1ToxF","MSTExp1ToxF",
+           "AlgExp2ToxF","CrustExp2ToxF","FishExp2ToxF","MSTExp2ToxF",
+           "AlgExp3ToxF","CrustExp3ToxF","FishExp3ToxF","MSTExp3ToxF",
+           "AlgExp1ToxG","CrustExp1ToxG","FishExp1ToxG","MSTExp1ToxG",
+           "AlgExp2ToxG","CrustExp2ToxG","FishExp2ToxG","MSTExp2ToxG",
+           "AlgExp3ToxG","CrustExp3ToxG","FishExp3ToxG","MSTExp3ToxG",
+           "AlgExp1ToxH","CrustExp1ToxH","FishExp1ToxH","MSTExp1ToxH",
+           "AlgExp2ToxH","CrustExp2ToxH","FishExp2ToxH","MSTExp2ToxH",
+           "AlgExp3ToxH","CrustExp3ToxH","FishExp3ToxH","MSTExp3ToxH",
+           "AlgExp1ToxI","CrustExp1ToxI","FishExp1ToxI","MSTExp1ToxI",
+           "AlgExp2ToxI","CrustExp2ToxI","FishExp2ToxI","MSTExp2ToxI",
+           "AlgExp3ToxI","CrustExp3ToxI","FishExp3ToxI","MSTExp3ToxI"
+           ))
+
+# list of all variables in alphabetical order, just for browsing through
+ListOfVar_compound_stats <- data.frame(vars = sort(names(compound_level_statistics)))
+ListOfVar_site_stats <- data.frame(vars = sort(names(site_level_statistics)))
+
+```
+
+```{r, eval=TRUE, include=FALSE, echo=FALSE}
+#########
+# Consistency checks
+#########
+
+# Always the same name per CAS number?
+dummy<-inputdata[!duplicated(inputdata[, c("cas_number", "chemical_name")]), ] # 1 row per unique CAS/name combination
+
+dummy2<-dummy[duplicated(dummy[, c("cas_number")]) | duplicated(dummy[, c("cas_number")], fromLast=TRUE),] # list duplicate CAS. Must contain zero entries
+if (nrow(dummy2)!=0)  
+{
+    winDialog("ok", "Duplicate CAS numbers in input datafile!")
+    quit("ask")  
+}  
+
+dummy2<-dummy[duplicated(dummy[, c("chemical_name")]) | duplicated(dummy[, c("chemical_name")], fromLast=TRUE),] # list duplicate names. Must contain zero entries
+if (nrow(dummy2)!=0)  
+{
+    winDialog("ok", "Duplicate compound names in input datafile!")
+    quit("ask")  
+}  
+
+# Same toxdata used for compounds across sites?
+dummy<-inputdata[!duplicated(inputdata[, c("cas_number", "alg_ecotox_uM","crust_ecotox_uM","fish_ecotox_uM","alg_vega_uM","crust_vega_uM","fish_vega_uM")]), ] # 1 row per unique toxdata/cas combination. Must contain 153 entries.
+if (nrow(dummy)!=153)  
+{
+    winDialog("ok", "Different toxdata used across sites!")
+    quit("ask")  
+}  
+```
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+# List number of experimental data for each group
+dummy<-inputdata[!duplicated(inputdata[, c("cas_number", "alg_ecotox_uM","crust_ecotox_uM","fish_ecotox_uM")]), ]
+dummy2<-inputdata[!duplicated(inputdata[, c("cas_number", "alg_vega_uM","crust_vega_uM","fish_vega_uM")]), ]
+```
+
+# Data per organism group
+
+## Experimental data
+
+-   Algae: `r nrow(subset(dummy,dummy$alg_ecotox_uM>0))`
+-   Crust.: `r nrow(subset(dummy,dummy$crust_ecotox_uM>0))`
+-   Fish: `r nrow(subset(dummy,dummy$fish_ecotox_uM>0))`
+
+## QSAR data (VEGA)
+
+-   Algae: `r nrow(subset(dummy,dummy$alg_vega_uM>0))`
+-   Crust.: `r nrow(subset(dummy,dummy$crust_vega_uM>0))`
+-   Fish: `r nrow(subset(dummy,dummy$fish_vega_uM>0))`
+
+### Chemicals for which no VEGA data are available:
+
+-   Algae: `r subset(dummy2,dummy2$alg_vega_uM<0)$chemical_name`
+-   Crust.: `r subset(dummy2,dummy2$crust_vega_uM<0)$chemical_name`
+-   Fish: `r subset(dummy2,dummy2$fish_vega_uM<0)$chemical_name`
+
+**All these chemicals are completely ignored in the mixtox analysis, in all VEGA-dependent scenarios.**
+
+## QSAR data (ECOSAR)
+
+-   Algae: `r nrow(subset(dummy,dummy$alg_ecosar_uM>0))`
+-   Crust.: `r nrow(subset(dummy,dummy$crust_ecosar_uM>0))`
+-   Fish: `r nrow(subset(dummy,dummy$fish_ecosar_uM>0))`
+
+### Chemicals for which no ECOSAR data are available:
+
+-   Algae: `r subset(dummy2,dummy2$alg_ecosar_uM<0)$chemical_name`
+-   Crust.: `r subset(dummy2,dummy2$crust_ecosar_uM<0)$chemical_name`
+-   Fish: `r subset(dummy2,dummy2$fish_ecosar_uM<0)$chemical_name`
+
+**All these chemicals are completely ignored in the mixtox analysis, in all ECOSAR-dependent scenarios.**
+
+# Correlation between VEGA and ECOSAR
+
+**Summary**
+
+-   Almost no correlation between both types of QSAR estimates
+-   Much higher variability of toxdata in ECOSAR. VEGA estimates are much closer to each other.
+
+There are some chemicals with excessively high ecosar values (\>1000). These are:
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+subset(compound_level_statistics,compound_level_statistics$alg_ecosar_uM>1000)[c("chemical_name","cas_number","alg_ecosar_uM")]%>%
+  distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  remove_rownames() %>%
+  kable(caption="Compounds with an ecosar value for algae > 1 000.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", include.rownames=FALSE,"condensed",font_size = 7))
+
+subset(compound_level_statistics,compound_level_statistics$crust_ecosar_uM>1000)[c("chemical_name","cas_number","crust_ecosar_uM")]%>%
+  distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  remove_rownames() %>%
+  kable(caption="Compounds with an ecosar value for crustaceans > 1 000.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", include.rownames=FALSE,"condensed",font_size = 7))
+
+subset(compound_level_statistics,compound_level_statistics$fish_ecosar_uM>1000)[c("chemical_name","cas_number","fish_ecosar_uM")]%>%
+  distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  remove_rownames() %>%
+  kable(caption="Compounds with an ecosar value for fish > 1 000.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", include.rownames=FALSE,"condensed",font_size = 7))
+```
+
+All values > 1000 are excluded from the following correlation plots.
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(alg_ecosar_uM<1000,alg_ecosar_uM>0,alg_vega_uM<1000,alg_vega_uM>0)
+
+plot1<-ggplot(plotdata,aes(x=alg_vega_uM,y=alg_ecosar_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("VEGA",limits=c(NextLowerOoM(min(plotdata$alg_vega_uM)),max(plotdata$alg_vega_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$alg_vega_uM))/NextLowerOoM(min(plotdata$alg_vega_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+  scale_y_log10("ECOSAR",limits=c(NextLowerOoM(min(plotdata$alg_ecosar_uM)),max(plotdata$alg_ecosar_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$alg_ecosar_uM))/NextLowerOoM(min(plotdata$alg_ecosar_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+
+  theme_bw()+
+  ggtitle("Algae") +
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(crust_ecosar_uM<1000,crust_ecosar_uM>0,crust_vega_uM<1000,crust_vega_uM>0)
+
+plot2<-ggplot(plotdata,aes(x=crust_vega_uM,y=crust_ecosar_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("VEGA",limits=c(NextLowerOoM(min(plotdata$crust_vega_uM)),max(plotdata$crust_vega_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$crust_vega_uM))/NextLowerOoM(min(plotdata$crust_vega_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+  scale_y_log10("ECOSAR",limits=c(NextLowerOoM(min(plotdata$crust_ecosar_uM)),max(plotdata$crust_ecosar_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$crust_ecosar_uM))/NextLowerOoM(min(plotdata$crust_ecosar_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+
+  theme_bw()+
+  ggtitle("Crustaceans") +
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+
+plot3<-ggplot(plotdata,aes(x=fish_vega_uM,y=fish_ecosar_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("VEGA",limits=c(NextLowerOoM(min(plotdata$fish_vega_uM)),max(plotdata$fish_vega_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$fish_vega_uM))/NextLowerOoM(min(plotdata$fish_vega_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+  scale_y_log10("ECOSAR",limits=c(NextLowerOoM(min(plotdata$fish_ecosar_uM)),max(plotdata$fish_ecosar_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$fish_ecosar_uM))/NextLowerOoM(min(plotdata$fish_ecosar_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+
+  theme_bw()+
+  ggtitle("Fish") +
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+
+suppressWarnings(print(plot1))
+suppressWarnings(print(plot2))
+suppressWarnings(print(plot3))
+                 
+```
+
+# Correlation empirical data vs VEGA
+
+There are some chemicals with excessively high empirical values (\>1000). These are:
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+subset(compound_level_statistics,compound_level_statistics$alg_ecotox_uM>1000)[c("chemical_name","cas_number","alg_ecotox_uM")]%>%
+  distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  remove_rownames() %>%
+  kable(caption="Compounds with an empirical value for algae > 1000.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", include.rownames=FALSE,"condensed",font_size = 7))
+
+subset(compound_level_statistics,compound_level_statistics$crust_ecotox_uM>1000)[c("chemical_name","cas_number","crust_ecotox_uM")]%>%
+  distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  remove_rownames() %>%
+  kable(caption="Compounds with an empricial value for crustaceans > 1000.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", include.rownames=FALSE,"condensed",font_size = 7))
+
+subset(compound_level_statistics,compound_level_statistics$fish_ecotox_uM>1000)[c("chemical_name","cas_number","fish_ecotox_uM")]%>%
+  distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  remove_rownames() %>%
+  kable(caption="Compounds with an empirical value for fish > 1000.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", include.rownames=FALSE,"condensed",font_size = 7))
+```
+
+All values with QSAR estimates are excluded from the following correlation plots.
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(alg_ecotox_uM<1000,alg_ecotox_uM>0,alg_vega_uM<1000,alg_vega_uM>0)
+  
+plot1<-ggplot(plotdata,aes(x=alg_ecotox_uM,y=alg_vega_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("Exp. Data",limits=c(NextLowerOoM(min(plotdata$alg_ecotox_uM)),max(plotdata$alg_ecotox_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$alg_ecotox_uM))/NextLowerOoM(min(plotdata$alg_ecotox_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+  scale_y_log10("VEGA",limits=c(NextLowerOoM(min(plotdata$alg_vega_uM)),max(plotdata$alg_vega_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$alg_vega_uM))/NextLowerOoM(min(plotdata$alg_vega_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+
+  theme_bw()+
+  ggtitle("Algae")+
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(crust_ecotox_uM<1000,crust_ecotox_uM>0,crust_vega_uM<1000,crust_vega_uM>0)
+
+plot2<-ggplot(plotdata,aes(x=crust_ecotox_uM,y=crust_vega_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("Exp. Data",limits=c(NextLowerOoM(min(plotdata$crust_ecotox_uM)),max(plotdata$crust_ecotox_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$crust_ecotox_uM))/NextLowerOoM(min(plotdata$crust_ecotox_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+  scale_y_log10("VEGA",limits=c(NextLowerOoM(min(plotdata$crust_vega_uM)),max(plotdata$crust_vega_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$crust_vega_uM))/NextLowerOoM(min(plotdata$crust_vega_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+
+  theme_bw()+
+  ggtitle("Crustaceans")+
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(fish_ecotox_uM<1000,fish_ecotox_uM>0,fish_vega_uM<1000,fish_vega_uM>0)
+
+plot3<-ggplot(plotdata,aes(x=fish_ecotox_uM,y=fish_vega_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("Exp. Data",limits=c(NextLowerOoM(min(plotdata$fish_ecotox_uM)),max(plotdata$fish_ecotox_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$fish_ecotox_uM))/NextLowerOoM(min(plotdata$fish_ecotox_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+  scale_y_log10("VEGA",limits=c(NextLowerOoM(min(plotdata$fish_vega_uM)),max(plotdata$fish_vega_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$fish_vega_uM))/NextLowerOoM(min(plotdata$fish_vega_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+
+  theme_bw()+
+  ggtitle("Fish")+
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+suppressWarnings(print(plot1))
+suppressWarnings(print(plot2))
+suppressWarnings(print(plot3))
+#ExportPlot(plot)
+
+```
+# Correlation empirical data vs ECOSAR
+
+All compounds with empirical data \> 1000 or ECOSAR estimates \> 1000 are excluded from the plots.
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(alg_ecotox_uM<1000,alg_ecotox_uM>0,alg_ecosar_uM<1000,alg_ecosar_uM>0)
+  
+plot1<-ggplot(plotdata,aes(x=alg_ecotox_uM,y=alg_ecosar_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("Exp. Data",limits=c(NextLowerOoM(min(plotdata$alg_ecotox_uM)),max(plotdata$alg_ecotox_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$alg_ecotox_uM))/NextLowerOoM(min(plotdata$alg_ecotox_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+  scale_y_log10("ECOSAR",limits=c(NextLowerOoM(min(plotdata$alg_ecosar_uM)),max(plotdata$alg_ecosar_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$alg_ecosar_uM))/NextLowerOoM(min(plotdata$alg_ecosar_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+
+  theme_bw()+
+  ggtitle("Algae")+
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(crust_ecotox_uM<1000,crust_ecotox_uM>0,crust_ecosar_uM<1000,crust_ecosar_uM>0)
+
+plot2<-ggplot(plotdata,aes(x=crust_ecotox_uM,y=crust_ecosar_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("Exp. Data",limits=c(NextLowerOoM(min(plotdata$crust_ecotox_uM)),max(plotdata$crust_ecotox_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$crust_ecotox_uM))/NextLowerOoM(min(plotdata$crust_ecotox_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+  scale_y_log10("ECOSAR",limits=c(NextLowerOoM(min(plotdata$crust_ecosar_uM)),max(plotdata$crust_ecosar_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$crust_ecosar_uM))/NextLowerOoM(min(plotdata$crust_ecosar_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+
+  theme_bw()+
+  ggtitle("Crustaceans")+
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+
+plotdata <- compound_level_statistics %>%
+distinct(chemical_name,cas_number, .keep_all = TRUE) %>%
+  filter(fish_ecotox_uM<1000,fish_ecotox_uM>0,fish_ecosar_uM<1000,fish_ecosar_uM>0)
+
+plot3<-ggplot(plotdata,aes(x=fish_ecotox_uM,y=fish_ecosar_uM))+
+  geom_point(size = 5)+
+  #geom_text(aes(label=Parameter), size=5,hjust=-0.1, vjust=-0.6)+ 
+  stat_function(fun = function(x) x, size=1, colour="red", linetype=1)+ # Line of perfect agreement
+  # stat_smooth(method = "lm", col = "blue")+
+  #coord_cartesian(xlim= c(5, 9), ylim= c(5, 9))+
+  scale_x_log10("Exp. Data",limits=c(NextLowerOoM(min(plotdata$fish_ecotox_uM)),max(plotdata$fish_ecotox_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$fish_ecotox_uM))/NextLowerOoM(min(plotdata$fish_ecotox_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+  
+  scale_y_log10("ECOSAR",limits=c(NextLowerOoM(min(plotdata$fish_ecosar_uM)),max(plotdata$fish_ecosar_uM)),
+                       breaks = trans_breaks("log10", function(x) 10^x, n=log10(NextHigherOoM(max(plotdata$fish_ecosar_uM))/NextLowerOoM(min(plotdata$fish_ecosar_uM)))),
+                       labels = trans_format("log10", math_format(10^.x)))+
+
+  theme_bw()+
+  ggtitle("Fish")+
+  theme(axis.text.x = element_text(size=18, colour = "black"), 
+        axis.title.x= element_text(size=18, colour = "black",margin=margin(20,0,0,0)),
+        axis.text.y = element_text(size=18, colour="black"), 
+        axis.title.y= element_text(size=18, colour = "black", margin=margin(0,20,0,0)),
+        panel.border = element_blank(),
+        axis.line.x = element_line(color = 'black',size=1),
+        axis.line.y = element_line(color = 'black',size=1),
+        legend.title = element_blank(),
+        legend.key = element_blank(),
+        plot.margin=unit(c(10,10,10,10),"mm") # oben, rechts, unten, links
+  )
+suppressWarnings(print(plot1))
+suppressWarnings(print(plot2))
+suppressWarnings(print(plot3))
+#ExportPlot(plot)
+```
+# Compounds per site 
+
+## Experimental data, deleting \<LOD
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+site_level_statistics[c("sites","alg_TU_Exp1_ToxA.no_components","crust_TU_Exp1_ToxA.no_components","fish_TU_Exp1_ToxA.no_components","MST_TU_Exp1_ToxA.no_components")] %>%
+  setnames(, c("Site","Algae", "Crust.","Fish","MST")) %>%
+  kable(caption="Number of compounds per site & endpoint. Experimental Data only, concentrations < LOD excluded.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+## Experimental data, keeping \< LOD
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+site_level_statistics[c("sites","alg_TU_Exp2_ToxA.no_components","crust_TU_Exp2_ToxA.no_components","fish_TU_Exp2_ToxA.no_components","MST_TU_Exp2_ToxA.no_components")]%>%
+  setnames(, c("Site","Algae", "Crust.","Fish","MST")) %>%
+  kable(caption="Number of compounds per site & endpoint. Experimental Data only, concentrations < LOD set to LOD") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+## VEGA data, deleting \<LOD
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+site_level_statistics[c("sites","alg_TU_Exp1_ToxB.no_components","crust_TU_Exp1_ToxB.no_components","fish_TU_Exp1_ToxB.no_components","MST_TU_Exp1_ToxB.no_components")] %>%
+  setnames(, c("Site","Algae", "Crust.","Fish","MST")) %>%
+  kable(caption="Number of compounds per site & endpoint. VEGA Data only, concentrations < LOD excluded.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+## VEGA data, keeping \< LOD
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+site_level_statistics[c("sites","alg_TU_Exp2_ToxB.no_components","crust_TU_Exp2_ToxB.no_components","fish_TU_Exp2_ToxB.no_components","MST_TU_Exp2_ToxB.no_components")] %>%
+  setnames(, c("Site","Algae", "Crust.","Fish","MST")) %>%
+  kable(caption="Number of compounds per site & endpoint. VEGA Data only, concentrations < LOD set to LOD") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+## ECOSAR data, deleting \<LOD
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+site_level_statistics[c("sites","alg_TU_Exp1_ToxC.no_components","crust_TU_Exp1_ToxC.no_components","fish_TU_Exp1_ToxC.no_components","MST_TU_Exp1_ToxC.no_components")] %>%
+  setnames(, c("Site","Algae", "Crust.","Fish","MST")) %>%
+  kable(caption="Number of compounds per site & endpoint. ECOSAR data only, concentrations < LOD excluded.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+## ECOSAR Data, keeping \< LOD
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+site_level_statistics[c("sites","alg_TU_Exp2_ToxC.no_components","crust_TU_Exp2_ToxC.no_components","fish_TU_Exp2_ToxC.no_components","MST_TU_Exp2_ToxC.no_components")] %>%
+  setnames(, c("Site","Algae", "Crust.","Fish","MST")) %>%
+  kable(caption="Number of compounds per site & endpoint. ECOSAR data only, concentrations < LOD set to LOD.") %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+# Analysis of Toxic Units Sums
+
+## All 3 exposure scenarios, missing data filled in by ECOSAR for MST, algae, crustaceans, fish
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+STU_summary[c(
+  "Site",
+  "MSTExp1ToxG","AlgExp1ToxG","CrustExp1ToxG","FishExp1ToxG"
+  )] %>%
+setnames(c("Site",
+           "MST","Algae","Crustaceans","Fish"
+           ))  %>%
+kable(caption="Sum of Toxic Units per Site (conc below LOD set to 0). Empirical data, amended by ECOSAR estimates ",digits=4) %>%
+kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+
+STU_summary[c(
+  "Site",
+  "MSTExp3ToxG","AlgExp3ToxG","CrustExp3ToxG","FishExp3ToxG"
+  )] %>%
+setnames(c("Site",
+           "MST","Algae","Crustaceans","Fish"
+           ))  %>%
+kable(caption="Sum of Toxic Units per Site (KM adjusted TUs). Empirical data, amended by ECOSAR estimates ",digits=4) %>%
+kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+
+STU_summary[c(
+  "Site",
+  "MSTExp2ToxG","AlgExp2ToxG","CrustExp2ToxG","FishExp2ToxG"
+  )] %>%
+setnames(c("Site",
+           "MST","Algae","Crustaceans","Fish"
+           ))  %>%
+kable(caption="Sum of Toxic Units per Site (conc below LOD set to LOD). Empirical data, amended by ECOSAR estimates ",digits=4) %>%
+kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+
+```
+## Differences between the 3 Exposure Scenarios (KM only)
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+STU_summary[c(
+  "Site",
+  "MSTExp1ToxG","MSTExp2ToxG","MSTExp3ToxG"
+  )] %>%
+  mutate(diff1=MSTExp3ToxG-MSTExp1ToxG,diff2=MSTExp2ToxG-MSTExp3ToxG) %>%
+setnames(c("Site",
+           "MST-Exp1","MST-Exp2","MST-Exp2","Exp3-Exp1", "Exp2-Exp3"
+           ))  %>%
+kable(caption="Differences in STU (KM)",digits=4) %>%
+kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+
+```
+Differences between Exp2 and Exp3 are much bigger than between Exp3 and Exp1. D.h., KM is more similar to conc<LOD=0 than to conc<LOD=LOD.
+
+## Maximum STUs
+The maximum STU is from the following scenarios:
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+
+dummy <- data.frame(colnames(STU_summary)[(apply(STU_summary[,2:ncol(STU_summary)], 1, maxn)+1)])
+
+# merge sites back in 
+dummy<-cbind(sites,dummy)
+
+colnames(dummy)<-c("sites","Maximum STU from")
+
+# values
+dummy$STU <- apply(STU_summary[,2:ncol(STU_summary)], 1, max)
+
+dummy%>%
+  kable(caption="Scenarios that generate the maximum STU.",digits=4) %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+That's what is expected. Exp2 is the exposure scenario in which conc<MDL are set to the MDL. The MST are always \> than each individual STU from algae, daphnids, fish. Scenario F is the one with empirical data, amended by the 100-times increased VEGA-QSAR values included. **But why is the maximum of T1 based on ToxC (ECOSAR, without multiplication by 100)?**
+
+Second highest values are from the following scenarios:
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+
+dummy <- data.frame(colnames(STU_summary)[(apply(STU_summary[,2:ncol(STU_summary)], 1, maxn,n=2)+1)])
+
+# merge sites back in 
+dummy<-cbind(sites,dummy)
+colnames(dummy)<-c("sites","2nd largest STU from")
+
+# values
+dummy$STU <- apply(STU_summary[,2:ncol(STU_summary)], 1, FUN= vector_maxn, n=2)
+
+
+dummy%>%
+  kable(caption="Scenarios that generate the seond maximal STU.",digits=4) %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+Exp3 is based on Kaplan-Meier adjusted TUs.
+
+## Maximum STUs without MST
+If the MST calculations are excluded (indicates most sensitive trophic levels):
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+
+dummy <- STU_summary %>% select(-contains("MST"))
+dummy <- data.frame(colnames(dummy)[(apply(dummy[,2:ncol(dummy)], 1, maxn)+1)])
+
+# merge sites back in 
+dummy<-cbind(sites,dummy)
+
+colnames(dummy)<-c("sites","Maximum STU from")
+
+# values
+dummy$STU <- apply(STU_summary[,2:ncol(STU_summary)], 1, max)
+
+dummy%>%
+  kable(caption="Scenarios that generate the maximum STU (excluding MST).",digits=4) %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+# Analysis of Mixture Risk Drivers
+
+## Absolute risk drivers
+An Absolute Mixture Risk Driver is defined as a compound with a TU >= 0.02 in the MST scenarios of ToxG / Exp1. 
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+compound_level_statistics %>% 
+  select(cas_number,chemical_name,MST_TU_Exp1_ToxG,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM,alg_ecosar_uM,crust_ecosar_uM,fish_ecosar_uM,NumEmpData,) %>%
+  filter(MST_TU_Exp1_ToxG>=0.02) %>%
+  group_by(cas_number,chemical_name,NumEmpData) %>%
+  mutate(minTU=min(MST_TU_Exp1_ToxG),meanTU=mean(MST_TU_Exp1_ToxG),maxTU=max(MST_TU_Exp1_ToxG),n=length(MST_TU_Exp1_ToxG)) %>%
+  distinct(minTU,meanTU,maxTU,n,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM, .keep_all = TRUE) %>%
+  select(-MST_TU_Exp1_ToxG) %>%
+  arrange(-meanTU) %>%
+  relocate(minTU,meanTU,maxTU,n,.after=chemical_name) %>%
+  replace_with_na_all(condition = ~.x==-7777) %>%
+  kable(caption="Absolute mixture risk drivers (MST, ToxG, Exp1).",digits=4) %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+**Surprisingly high fish toxicity for herbicide metabolites (Terbuthylazine-2-hydroxy,2-Hydroxyatrazine,Desethylterbutylazine).**
+
+## Relative Risk Drivers
+A Relative Risk Driver is a compound that contributes 20% or more to the STU in the MST scenarios of ToxG / Exp2.
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+compound_level_statistics %>% 
+  select(cas_number,chemical_name,MST_TU_Exp1_ToxG.relTU, NumEmpData,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM) %>%
+  filter(MST_TU_Exp1_ToxG.relTU>=0.2) %>%
+  group_by(cas_number,chemical_name,NumEmpData) %>%
+  mutate(minRelTU=min(MST_TU_Exp1_ToxG.relTU),meanRelTU=mean(MST_TU_Exp1_ToxG.relTU),maxRelTU=max(MST_TU_Exp1_ToxG.relTU),n=length(MST_TU_Exp1_ToxG.relTU)) %>%
+  distinct(minRelTU,meanRelTU,maxRelTU,n,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM, .keep_all = TRUE) %>%
+  select(-MST_TU_Exp1_ToxG.relTU) %>%
+  arrange(-meanRelTU) %>%
+  relocate(minRelTU,meanRelTU,maxRelTU,n,.after=chemical_name) %>%
+  replace_with_na_all(condition = ~.x==-7777) %>%
+  kable(caption="Relative mixture risk drivers (MST, ToxG, Exp1).",digits=4) %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+Daidzein is a naturally occurring isoflavone. Originates from legumes (indicator for agricultural activities).
+
+## Potential absolute risk drivers
+Potential absolute risk drivers are compounds whose QSAR-amended MST can reach 0.01, if the original QSARs are inflated by a factor of 100. All real absolute mixture risk drivers are obviously also potential absolute risk drivers, so below are only those compounds listed that are not real absolute mixture risk drivers.
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+compound_level_statistics %>% 
+  select(cas_number,chemical_name,MST_TU_Exp1_ToxG,MST_TU_Exp1_ToxI,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM,alg_ecosar_uM,crust_ecosar_uM,fish_ecosar_uM,NumEmpData,) %>%
+  filter(MST_TU_Exp1_ToxG<0.01, MST_TU_Exp1_ToxI>=0.01) %>%
+  group_by(cas_number,chemical_name,NumEmpData) %>%
+  mutate(minTU=min(MST_TU_Exp1_ToxI),meanTU=mean(MST_TU_Exp1_ToxI),maxTU=max(MST_TU_Exp1_ToxI),n=length(MST_TU_Exp1_ToxI)) %>%
+  distinct(minTU,meanTU,maxTU,n,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM, .keep_all = TRUE) %>%
+  select(-MST_TU_Exp1_ToxG,-MST_TU_Exp1_ToxI) %>%
+  arrange(-meanTU) %>%
+  relocate(minTU,meanTU,maxTU,n,.after=chemical_name) %>%
+  replace_with_na_all(condition = ~.x==-7777) %>%
+  kable(caption="Potential absolute mixture risk drivers (MST, ToxI, Exp1).",digits=4) %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+
+```
+
+## Potential relative risk drivers
+Potential absolute risk drivers are compounds without any empirical data, whose QSAR-amended MST can contribute with 20% or more to the STU, if the original QSARs are inflated by a factor of 100. All real realtive mixture risk drivers are obviously also potential relative risk drivers, so below are only those compounds listed that are not real relative mixture risk drivers.
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+compound_level_statistics %>% 
+  select(cas_number,chemical_name,MST_TU_Exp1_ToxI.relTU,MST_TU_Exp1_ToxG.relTU, NumEmpData,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM) %>%
+  filter(MST_TU_Exp1_ToxI.relTU>=0.2 & MST_TU_Exp1_ToxG.relTU<0.2) %>%
+  group_by(cas_number,chemical_name,NumEmpData) %>%
+  mutate(minRelTU=min(MST_TU_Exp1_ToxG.relTU),meanRelTU=mean(MST_TU_Exp1_ToxG.relTU),maxRelTU=max(MST_TU_Exp1_ToxG.relTU),n=length(MST_TU_Exp1_ToxG.relTU)) %>%
+  distinct(minRelTU,meanRelTU,maxRelTU,n,alg_ecotox_uM,crust_ecotox_uM,fish_ecotox_uM, .keep_all = TRUE) %>%
+  select(-MST_TU_Exp1_ToxG.relTU,-MST_TU_Exp1_ToxG.relTU) %>%
+  arrange(-meanRelTU) %>%
+  relocate(minRelTU,meanRelTU,maxRelTU,n,.after=chemical_name) %>%
+  replace_with_na_all(condition = ~.x==-7777) %>%
+  kable(caption="Potential relative mixture risk drivers (MST, ToxI, Exp1).",digits=4) %>%
+  kable_styling(full_width = T,bootstrap_options = c("striped", "hover", "condensed",font_size = 7))
+```
+
+# Waterfall charts for Exp2, ToxG & ToxI
+Exp2 is the exposure scenario in which all conc<MDL are set to MDL. ToxG are empirical data plus ecosar, ToxI are empirical data plus ecosar/100 (ecosar TUs are 100x exaggerated).
+
+As a consequence, far more QSAR-influence is present in ToxI. Take note that a compound with an "empirical" TU in ToxG can become a "QSAR-TU" in ToxI. See for example Chlorfenapyr in site T2 in the MST analysis. This happens when empirical data are present for some but not all trophic levels and the empirical data are determining the MST in ToxG - but are overrridden by QSAR estimates if those are inflated by multiplying them with a factor of 100.
+
+## MST
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+
+# Exp2
+# MST based on best estimate (ToxG: empirical data + ecosar) and worst-case QSAR-amended (ToxI, empirical dat a+ ecosar/100)
+# All sites
+
+# R1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site R1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site R1")
+
+#R2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site R2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site R2")
+
+#R3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site R3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site R3")
+
+#RS1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site RS1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site RS1")
+
+#RS2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site RS2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site RS2")
+
+#RS3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site RS3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site RS3")
+
+#T1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site T1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site T1")
+
+#T2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site T2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site T2")
+
+#T3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-MST_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$MST_TU_Exp2_ToxG.STU,
+          PlotTitle="MST, Exp2, ToxG, Site T3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-MST_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$MST_TU_Exp2_ToxA==plotdata$MST_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$MST_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$MST_TU_Exp2_ToxI.STU,
+          PlotTitle="MST, Exp2, ToxI, Site T3")
+
+```
+
+## Algae
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+
+# Exp2
+# Algal-TUs based on best estimate (ToxG: empirical data + ecosar) and worst-case QSAR-amended (ToxI, empirical dat a+ ecosar/100)
+# All sites
+
+# R1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site R1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site R1")
+
+#R2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site R2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site R2")
+
+#R3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site R3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site R3")
+
+#RS1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site RS1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site RS1")
+
+#RS2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site RS2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site RS2")
+
+#RS3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site RS3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site RS3")
+
+#T1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site T1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site T1")
+
+#T2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site T2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site T2")
+
+#T3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-alg_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$alg_TU_Exp2_ToxG.STU,
+          PlotTitle="Algae, Exp2, ToxG, Site T3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-alg_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$alg_TU_Exp2_ToxA==plotdata$alg_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$alg_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$alg_TU_Exp2_ToxI.STU,
+          PlotTitle="Algae, Exp2, ToxI, Site T3")
+
+```
+
+## Crustaceans
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+
+# Exp2
+# Algal-TUs based on best estimate (ToxG: empirical data + ecosar) and worst-case QSAR-amended (ToxI, empirical dat a+ ecosar/100)
+# All sites
+
+# R1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site R1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site R1")
+
+#R2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site R2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site R2")
+
+#R3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site R3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site R3")
+
+#RS1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site RS1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site RS1")
+
+#RS2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site RS2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site RS2")
+
+#RS3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site RS3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site RS3")
+
+#T1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site T1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site T1")
+
+#T2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site T2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site T2")
+
+#T3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-crust_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$crust_TU_Exp2_ToxG.STU,
+          PlotTitle="Crustaceans, Exp2, ToxG, Site T3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-crust_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$crust_TU_Exp2_ToxA==plotdata$crust_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$crust_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$crust_TU_Exp2_ToxI.STU,
+          PlotTitle="Crustaceans, Exp2, ToxI, Site T3")
+
+```
+
+
+## Fish
+
+```{r, eval=TRUE, include=TRUE, echo=FALSE}
+
+# Exp2
+# Algal-TUs based on best estimate (ToxG: empirical data + ecosar) and worst-case QSAR-amended (ToxI, empirical dat a+ ecosar/100)
+# All sites
+
+# R1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site R1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R1") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R1",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site R1")
+
+#R2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site R2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R2") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R2",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site R2")
+
+#R3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site R3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "R3") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="R3",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site R3")
+
+#RS1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site RS1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS1") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS1",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site RS1")
+
+#RS2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site RS2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS2") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS2",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site RS2")
+
+#RS3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site RS3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "RS3") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="RS3",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site RS3")
+
+#T1
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site T1")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T1") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T1",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site T1")
+
+#T2
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site T2")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T2") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T2",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site T2")
+
+#T3
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-fish_TU_Exp2_ToxG.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxG,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxG.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$fish_TU_Exp2_ToxG.STU,
+          PlotTitle="Fish, Exp2, ToxG, Site T3")
+
+plotdata <- subset(compound_level_statistics,compound_level_statistics$sites == "T3") %>%
+  arrange(-fish_TU_Exp2_ToxI.TU) %>%
+  head(15)
+
+plotdata$TUClass<-ifelse(plotdata$fish_TU_Exp2_ToxA==plotdata$fish_TU_Exp2_ToxI,"Empirical","QSAR")
+plotdata$ExpClass<-ifelse(plotdata$Exp1==plotdata$Exp2,"Measured","Below_LOD")
+
+Waterfall(plotdata$fish_TU_Exp2_ToxI.TU,Names=plotdata$chemical_name, TU_class = plotdata$TUClass, Exp_class = plotdata$ExpClass,
+          STU=site_level_statistics[site_level_statistics$sites=="T3",]$fish_TU_Exp2_ToxI.STU,
+          PlotTitle="Fish, Exp2, ToxI, Site T3")
+
+```
